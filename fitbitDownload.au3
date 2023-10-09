@@ -1,17 +1,17 @@
 #NoTrayIcon
 #Region ;**** Directives created by AutoIt3Wrapper_GUI ****
 #AutoIt3Wrapper_Version=Beta
-#AutoIt3Wrapper_UseX64=y
+#AutoIt3Wrapper_UseUpx=y
 #AutoIt3Wrapper_Change2CUI=y
 #AutoIt3Wrapper_Res_Comment=fitbitSave
 #AutoIt3Wrapper_Res_Description=fitbitSave
-#AutoIt3Wrapper_Res_Fileversion=0.0.0.78
+#AutoIt3Wrapper_Res_Fileversion=0.0.0.96
 #AutoIt3Wrapper_Res_Fileversion_AutoIncrement=y
 #AutoIt3Wrapper_Res_LegalCopyright=fitbitSave
 #AutoIt3Wrapper_Res_Language=1033
 #AutoIt3Wrapper_Res_requestedExecutionLevel=asInvoker
 #AutoIt3Wrapper_Run_After=del "%scriptdir%\%scriptfile%_stripped.au3"
-#AutoIt3Wrapper_Run_After="%scriptdir%\Public_RepoPush.exe"
+;#AutoIt3Wrapper_Run_After="%scriptdir%\Public_RepoPush.exe"
 #AutoIt3Wrapper_Run_Tidy=y
 #AutoIt3Wrapper_Run_Au3Stripper=y
 #Au3Stripper_Parameters=/sf /mi 8
@@ -32,7 +32,7 @@ Global $ll = llc
 #include <Date.au3>
 
 
-Global $_DEBUG = False
+Global $_DEBUG = True
 Global $_DEBUG_REST = False
 Global $_DEBUG_WRITE = False
 Global $REST_headers
@@ -74,6 +74,7 @@ If Int(IniRead($ini, 'main', 'DownloadGeneralData', 1)) Then updateGeneral()
 If Int(IniRead($ini, 'main', 'DownloadSleepLog', 1)) Then syncSleep()
 If Int(IniRead($ini, 'main', 'DownloadActivityLog', 1)) Then syncActivites()
 If Int(IniRead($ini, 'main', 'DownloadTimeSeries', 1)) Then updateTimeSeries()
+If Int(IniRead($ini, 'main', 'DownloadECGLog', 1)) Then syncECG()
 
 ConsoleWrite(@CRLF)
 ConsoleWrite('Done' & @CRLF)
@@ -211,6 +212,71 @@ Func syncSleep($iter = 0)
 	Return
 EndFunc   ;==>syncSleep
 
+
+Func syncECG($iter = 0)
+	Local $todaysDate = _DateAdd('D', 0, _NowCalcDate())
+	If $iter = 0 And Int(IniRead($ini, 'main', 'DownloadECGLog', 1)) < 2 And $DownloadOnceADay And mapRead($jmap, 'lastDateECGUpdate') = $todaysDate Then
+		ConsoleWrite('ECG data was already downloaded today.' & @CRLF)
+		ConsoleWrite(@CRLF)
+		Return
+	EndIf
+
+	ConsoleWrite('Reading downloaded list of ECG entries...' & @CRLF)
+	Local $afile = $dataFolder & '\FitBitECGLog.json'
+	Local $amap = fileReadJson($afile)
+	Local $arr
+
+	Local $offset = 0
+	If MapExists($amap, 'ecgReadings') Then
+		$offset = UBound($amap['ecgReadings'])
+		ConsoleWrite('Number of stored ECG entries: ' & $offset & @CRLF)
+	Else
+		ConsoleWrite('Creating new ECG data file.' & @CRLF)
+		Local $tarr[0]
+		$amap['ecgReadings'] = $tarr
+	EndIf
+	ConsoleWrite('Downloading a list of ECG entries...' & @CRLF)
+	Local $beforeDate = StringRegExpReplace(_DateAdd('d', 1, _NowCalcDate()), '/', '-')
+	Local $afterDate = StringRegExpReplace(_DateAdd('d', 1, _NowCalcDate()), '/', '-')
+	Local $url = 'https://api.fitbit.com/1/user/-/ecg/list.json?beforeDate=' & $beforeDate & '&sort=asc&offset=' & $offset & '&limit=10'
+	Local $tmap = FitBitGet($url)
+
+	Local $new = 0
+	If Not MapExists($tmap, 'ecgReadings') Then
+		ConsoleWrite('Could not get a list of ECG entries.' & @CRLF)
+	Else
+		$arr = $tmap['ecgReadings']
+		If UBound($arr) < 1 Then
+			Local $amapLen = UBound($amap['ecgReadings'])
+			If Not $amapLen Then
+				ConsoleWrite('No ECG entries found.' & @CRLF)
+			Else
+				ConsoleWrite("There are " & $amapLen & " ECG entries downloaded." & @CRLF)
+				$amapLen -= 1
+				ConsoleWrite('No new ECG entries found since ' & (($amap['ecgReadings'])[$amapLen])['startTime'] & @CRLF)
+			EndIf
+		Else
+			ConsoleWrite('Downloaded additional ' & UBound($arr) & ' ECG entries.' & @CRLF)
+			_ArrayConcatenate($amap['ecgReadings'], $arr)
+			fileWriteJson($afile, $amap)
+			syncECG($iter + 1)
+			$new += 1
+		EndIf
+	EndIf
+
+	If $new And FileExists(@ScriptDir & "\ECG\ecgwav.exe") Then
+		Run(@ScriptDir & "\ECG\ecgwav.exe", @ScriptDir & "\ECG")
+	EndIf
+
+	$jmap['lastDateECGUpdate'] = $todaysDate
+	fileWriteJson($jfile, $jmap)
+	ConsoleWrite(@CRLF)
+	Return
+EndFunc   ;==>syncECG
+
+
+
+
 Func syncActivites()
 	Local $todaysDate = _DateAdd('D', 0, _NowCalcDate())
 	If $DownloadOnceADay And mapRead($jmap, 'lastDateActivitesUpdate') = $todaysDate Then
@@ -301,6 +367,12 @@ EndFunc   ;==>syncActivites
 
 
 Func updateTimeSeries()
+	Local $todaysDate = _DateAdd('D', 0, _NowCalcDate())
+	If $DownloadOnceADay And mapRead($jmap, 'lastDateUpdateTimeSeries') = $todaysDate Then
+		ConsoleWrite('Time Series data was already downloaded today.' & @CRLF)
+		ConsoleWrite(@CRLF)
+		Return
+	EndIf
 
 	ConsoleWrite('Updating FitBit time series data...' & @CRLF)
 	Local $jsonDataFolder = $dataFolder & '\TimeSeriesData'
@@ -320,7 +392,7 @@ Func updateTimeSeries()
 
 	IniReadSection($ini, 'TimeSeriesToDownload')
 	If Not @error Then
-		For $ii = $dateDiff To 0
+		For $ii = $dateDiff To 0 Step 1
 			If FitBitDayW($ii, $jsonDataFolder) Then
 				$jmap['lastDateTimeSeries'] = _DateAdd('D', $ii, _NowCalcDate())
 				fileWriteJson($jfile, $jmap)
@@ -330,6 +402,10 @@ Func updateTimeSeries()
 	Else
 		ConsoleWrite('Did not find section TimeSeriesToDownload in ' & $ini & @CRLF)
 	EndIf
+
+
+	$jmap['lastDateUpdateTimeSeries'] = $todaysDate
+	fileWriteJson($jfile, $jmap)
 	ConsoleWrite(@CRLF)
 EndFunc   ;==>updateTimeSeries
 
@@ -403,6 +479,7 @@ Func FitBitGet($url)
 	Local $dat = REST($url, 'GET')
 	Local $rc = @extended
 	;ConsoleWrite('DATA [' & $rc & ']: ' & regex($dat, '([^\r\n]{0,120})') & '...' & @CRLF)
+	ConsoleWrite('DATA [' & $rc & ']: ' & $dat & @CRLF)
 	If ($rc = 429) Then
 		Local $retryAfterSec = Int(regex($REST_headers, 'Fitbit-Rate-Limit-Reset: (\d+)', 3600)) + 61
 		ConsoleWrite(@CRLF)
@@ -578,7 +655,7 @@ Func codeGet($token = False)
 	EndIf
 
 	ConsoleWrite('Waiting for authorization from FitBit...' & @CRLF)
-	ShellExecute($authURL & '?response_type=' & $type & '&client_id=' & $clientID & '&redirect_uri=' & _URIEncode($callbackURL) & '&scope=activity%20heartrate%20location%20nutrition%20profile%20settings%20sleep%20social%20weight&expires_in=86400')
+	ShellExecute($authURL & '?response_type=' & $type & '&client_id=' & $clientID & '&redirect_uri=' & _URIEncode($callbackURL) & '&scope=activity+cardio_fitness+electrocardiogram+heartrate+location+nutrition+oxygen_saturation+profile+respiratory_rate+settings+sleep+social+temperature+weight&expires_in=604800')
 
 	Local $iSocket = 0
 	Local $ti = TimerInit()
